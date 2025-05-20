@@ -1,7 +1,7 @@
 #!/usr/bin/env python3.12
 
 from client.coup_client import CoupClient
-from client.bots import CoupBot, TestBot
+from client.bots import CoupBot, TestBot, AICoupBot
 from loguru import logger
 import argparse
 import sys, os
@@ -30,6 +30,7 @@ if __name__ == "__main__":
                    format="<green>{time:HH:mm:ss:SSS}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | <level>{message}</level>")
 
     # Create client
-    player = TestBot()
+    # player = TestBot()
+    player = AICoupBot()
     client = CoupClient(args.a, args.p, player)
     client.run()
