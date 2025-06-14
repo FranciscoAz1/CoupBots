@@ -212,8 +212,6 @@ class HonestBot(InformedPlayer):
         
         self.pick_random(choices)
         
-        
-
 class TestBot(InformedPlayer):    
     """TestBot player class."""
 
@@ -245,51 +243,15 @@ class TestBot(InformedPlayer):
 
 import ollama
 class AICoupBot(InformedPlayer):
-    """
-    CoopBot player class.
-    
-    Attributes:
-        alive (bool): Flag for whether the player is alive or not.
-        checkout (SimpleQueue): Queue used to send messages to the server. The queue is thread-safe and can be used by multiple threads.
-        coins (int): Number of coins the player has.
-        deck (list[str]): List of cards in the player's deck.
-        exchange_cards (list[str]): List of cards to exchange with the deck.
-        id (str): Player ID.
-        is_root (bool): Flag for whether the player is the root player or not.
-        msg (GameMessage): Message to be sent to the server.
-        players (dict[str, PlayerSim]): Dictionary of players in the game.
-        possible_messages (list[str]): List of possible messages the player can send.
-        rcv_msg (GameMessage): Last received message.
-        ready (bool): Flag for whether the player is ready or not.
-        replied (bool): Flag for whether the player has replied to the last message or not.
-        state (PlayerState): State of the player.
-        tag (Tag): Tag for the player. Used to identify the player in the game.
-        term (Terminal): Terminal used to write messages manually.
-        terminate_after_death (bool): Flag for whether the player should terminate after its own death.
-        turn (bool): Flag for whether it is the player's turn or not.
-    
-    Methods:
-        choose_message(): Choose a message to send to the server based on the current state of the game.
-        
-    """
-
-    def __init__(self):
-        super().__init__()
-
-    def choose_message(self) -> None:
-        if len(self.possible_messages) == 0:
-            raise IndexError("No possible messages.")
-        
-        # Implement your bot here
-        # Example: choose a random message from possible messages
-        self.msg = GameMessage(random.choice(self.possible_messages))
-
-import ollama
-class AICoupBot(InformedPlayer):
     """TestBot player class."""
 
     def __init__(self):
         super().__init__()
+        try:
+            self.ollama_client = ollama.Client(host="http://localhost:11434")
+        except Exception as e:
+            logger.error(f"Failed to connect to Ollama server: {str(e)}")
+            raise RuntimeError("Ollama server is not running or not reachable.")
 
     def choose_message(self):
         if len(self.possible_messages) == 0:
@@ -297,13 +259,15 @@ class AICoupBot(InformedPlayer):
         # TODO: Implement a AI BOT here
         # The AI bot should get context from the game history and choose a message, from the self.possible_messages
         # Use ollama that is running on a ollama server
-        ollama_client = ollama.AsyncClient(host="localhost", port=11434, timeout=10000)
-
+        ollama_client = self.ollama_client
+        if not ollama_client:
+            logger.error("Ollama client is not initialized.")
+            return
         # Get messages from game history
         messages = []
         # TODO: create a system prompt signaling this is an AI bot playing the game coup
-        system_prompt = """You are an AI bot playing the card game Coup. 
-        
+        system_prompt = f"""You are an AI bot playing the card game Coup, your are Player {self.id} in this game.
+
 Game rules:
 - Each player starts with 2 character cards and 2 coins
 - The game is about deception, bluffing, and strategy
@@ -319,12 +283,99 @@ Your task:
 
 DO NOT create new messages or modify the existing ones. ONLY select from the provided list."""
         messages.append({"role": "system", "content": system_prompt})
-        messages.extend(self.game_history)
-        # prepare a better prompt with the possible messages, explain why each of the messages would be useful in the game of coup
-        messages.append({"role": "user", "content": self.possible_messages})
+        
+        if self.history:
+            messages.append({"role": "system", "content": f"The following is the game history, use it to predict the best decision, where  Player {self.id} wins the game."})
 
-        # TODO: get the response from the ollama server
-        response = ollama_client.chat(model="quen2.5:latest", messages=messages, stream=False)
+        # Convert game history to chat format - filter out OK messages first, then take the most recent 20 messages
+        filtered_history = [msg for msg in self.history if msg.command != OK]
+        recent_history = filtered_history[-20:] if len(filtered_history) > 20 else filtered_history
+        
+        for game_msg in recent_history:
+            # Humanize the game message for better understanding
+            if game_msg.command == ACT:
+                content = f"{game_msg.ID1} performed action: {game_msg.action}"
+            elif game_msg.command == BLOCK:
+                content = f"{game_msg.ID1} blocked action: {game_msg.action}"
+            elif game_msg.command == CHAL:
+                content = f"{game_msg.ID1} challenged action: {game_msg.action}"
+            elif game_msg.command == SHOW:
+                content = f"{game_msg.ID1} showed card: {game_msg.card1}"
+            elif game_msg.command == LOSE:
+                content = f"{game_msg.ID1} lost card: {game_msg.card1}"
+            else:
+                content = str(game_msg)
+            messages.append({"role": "system", "content": content})
+
+        # Humanize possible messages for better AI understanding
+        def humanize_message(msg_str):
+            """Convert raw message strings to human-readable format"""
+            try:
+                parts = msg_str.split(',')
+                msg_type = parts[0]
+                
+                if msg_type == ACT:
+                    action = parts[2] if len(parts) > 2 else parts[1]
+                    target = f" targeting player {parts[3]}" if len(parts) > 3 and parts[3] else ""
+                    action_names = {
+                        "I": "Income (gain 1 coin)",
+                        "F": "Foreign Aid (gain 2 coins)",
+                        "C": "Coup (pay 7 coins to eliminate opponent's card)",
+                        "T": "Tax (gain 3 coins, requires Duke)",
+                        "A": "Assassinate (pay 3 coins to eliminate opponent's card, requires Assassin)",
+                        "S": "Steal (take 2 coins from opponent, requires Captain)",
+                        "X": "Exchange (swap cards with deck, requires Ambassador)"
+                    }
+                    return f"Perform {action_names.get(action, action)}{target}"
+                elif msg_type == BLOCK:
+                    card = parts[2] if len(parts) > 2 else "card"
+                    card_names = {
+                        "A": "Assassin",
+                        "B": "Ambassador", 
+                        "C": "Captain",
+                        "D": "Duke",
+                        "E": "Contessa"
+                    }
+                    return f"Block using {card_names.get(card, card)}"
+                elif msg_type == CHAL:
+                    return "Challenge the current action"
+                elif msg_type == OK:
+                    return "Accept/Allow the action"
+                elif msg_type == SHOW:
+                    card = parts[2] if len(parts) > 2 else parts[1] if len(parts) > 1 else "card"
+                    card_names = {"A": "Assassin", "B": "Ambassador", "C": "Captain", "D": "Duke", "E": "Contessa"}
+                    return f"Show {card_names.get(card, card)} card"
+                elif msg_type == LOSE:
+                    card = parts[2] if len(parts) > 2 else parts[1] if len(parts) > 1 else "card"
+                    card_names = {"A": "Assassin", "B": "Ambassador", "C": "Captain", "D": "Duke", "E": "Contessa"}
+                    return f"Lose {card_names.get(card, card)} card"
+                elif msg_type == CHOOSE:
+                    return "Choose cards to keep"
+                elif msg_type == KEEP:
+                    return "Keep selected cards"
+                else:
+                    return msg_str
+            except:
+                return msg_str
+
+        humanized_messages = [f"'{msg}' = {humanize_message(msg)}" for msg in self.possible_messages]
+        humanized_text = "\n".join(humanized_messages)
+        
+        # prepare a better prompt with the possible messages, explain why each of the messages would be useful in the game of coup
+        messages.append({"role": "user", "content": f"""Find the best action for you Player {self.id} to win coup from the following possible actions:
+
+{humanized_text}
+
+Choose the raw message (the part in quotes) that gives you the best strategic advantage. Consider:
+- Your current cards: {self.deck if hasattr(self, 'deck') else 'Unknown'}
+- Your coins: {self.coins if hasattr(self, 'coins') else 'Unknown'}
+- The game history above
+- What would help you win or eliminate opponents
+
+Return ONLY the exact raw message string (the part in quotes)."""})
+
+        # get the response from the ollama server
+        response = ollama_client.chat(model="qwen2.5:latest", messages=messages, stream=False)
 
         model_response = response["message"]["content"]
 
@@ -376,7 +427,7 @@ DO NOT create new messages or modify the existing ones. ONLY select from the pro
                         {"role": "user", "content": retry_prompt}
                     ]
                     
-                    retry_response = ollama_client.chat(model="quen2.5:latest", messages=retry_messages, stream=False)
+                    retry_response = ollama_client.chat(model="qwen2.5:latest", messages=retry_messages, stream=False)
                     retry_model_response = retry_response["message"]["content"]
                     
                     selected_message = find_message_in_response(retry_model_response, self.possible_messages)
